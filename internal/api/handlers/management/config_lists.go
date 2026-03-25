@@ -509,19 +509,24 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 	}
 	for i := range arr {
 		normalizeVertexCompatKey(&arr[i])
+		if arr[i].APIKey == "" {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("vertex-api-key[%d].api-key is required", i)})
+			return
+		}
 	}
-	h.cfg.VertexCompatAPIKey = arr
+	h.cfg.VertexCompatAPIKey = append([]config.VertexCompatKey(nil), arr...)
 	h.cfg.SanitizeVertexCompatKeys()
 	h.persist(c)
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
-		APIKey   *string                     `json:"api-key"`
-		Prefix   *string                     `json:"prefix"`
-		BaseURL  *string                     `json:"base-url"`
-		ProxyURL *string                     `json:"proxy-url"`
-		Headers  *map[string]string          `json:"headers"`
-		Models   *[]config.VertexCompatModel `json:"models"`
+		APIKey         *string                     `json:"api-key"`
+		Prefix         *string                     `json:"prefix"`
+		BaseURL        *string                     `json:"base-url"`
+		ProxyURL       *string                     `json:"proxy-url"`
+		Headers        *map[string]string          `json:"headers"`
+		Models         *[]config.VertexCompatModel `json:"models"`
+		ExcludedModels *[]string                   `json:"excluded-models"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -584,6 +589,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.Models != nil {
 		entry.Models = append([]config.VertexCompatModel(nil), (*body.Value.Models)...)
+	}
+	if body.Value.ExcludedModels != nil {
+		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
 	}
 	normalizeVertexCompatKey(&entry)
 	h.cfg.VertexCompatAPIKey[targetIndex] = entry
@@ -1025,6 +1033,7 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 	entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
+	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
 	if len(entry.Models) == 0 {
 		return
 	}

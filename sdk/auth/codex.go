@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/browser"
+
 	// legacy client removed
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -32,7 +33,7 @@ func (a *CodexAuthenticator) Provider() string {
 }
 
 func (a *CodexAuthenticator) RefreshLead() *time.Duration {
-	return new(5 * 24 * time.Hour)
+	return new(5 * 24 * time.Hour) // 提前 5 天刷新
 }
 
 func (a *CodexAuthenticator) Login(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {

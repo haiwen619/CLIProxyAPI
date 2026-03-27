@@ -25,6 +25,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules"
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/custom/accountpool"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -157,6 +158,8 @@ type Server struct {
 
 	// management handler
 	mgmt *managementHandlers.Handler
+	// accountPool serves the isolated account pool UI and endpoints.
+	accountPool *accountpool.Service
 
 	// ampModule is the Amp routing module for model mapping hot-reload
 	ampModule *ampmodule.AmpModule
@@ -263,6 +266,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.accountPool = accountpool.New(configFilePath)
+	s.accountPool.SetConfig(cfg)
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
 	}
@@ -318,6 +323,8 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
+	s.engine.GET("/account-pool", s.accountPool.ServePage)
+	s.engine.GET("/account-pool/assets/:name", s.accountPool.ServeAsset)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)
@@ -640,6 +647,16 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/iflow-auth-url", s.mgmt.RequestIFlowCookieToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+		mgmt.GET("/account-pool", s.accountPool.GetState)
+		mgmt.POST("/account-pool/accounts", s.accountPool.CreateAccount)
+		mgmt.PUT("/account-pool/accounts", s.accountPool.ReplaceAccounts)
+		mgmt.PUT("/account-pool/accounts/:id", s.accountPool.UpdateAccount)
+		mgmt.PATCH("/account-pool/accounts/:id/status", s.accountPool.PatchStatus)
+		mgmt.DELETE("/account-pool/accounts/:id", s.accountPool.DeleteAccount)
+		mgmt.POST("/account-pool/accounts/:id/run-codex-login", s.accountPool.RunCodexLogin)
+		mgmt.POST("/account-pool/accounts/:id/run-codex-login-stream", s.accountPool.RunCodexLoginStream)
+		mgmt.POST("/account-pool/import-config", s.accountPool.ImportFromConfig)
+		mgmt.POST("/account-pool/export-config", s.accountPool.ExportToConfig)
 	}
 }
 
@@ -680,7 +697,14 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	c.Data(http.StatusOK, "text/html; charset=utf-8", accountpool.InjectManagementHTML(data))
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
@@ -970,6 +994,9 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	if s.mgmt != nil {
 		s.mgmt.SetConfig(cfg)
 		s.mgmt.SetAuthManager(s.handlers.AuthManager)
+	}
+	if s.accountPool != nil {
+		s.accountPool.SetConfig(cfg)
 	}
 
 	// Notify Amp module only when Amp config has changed.

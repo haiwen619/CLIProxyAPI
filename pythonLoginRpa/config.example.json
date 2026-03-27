@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy this file to config.json and fill in your details. config.json is gitignored.",
+
+  "mgmt_url": "http://127.0.0.1:8317",
+  "mgmt_key": "123456",
+
+  "headless": true,
+
+  "delay_between_accounts": 3,
+
+  "accounts": [
+    {
+      "email": "account1@gmail.com",
+      "password": "password1",
+      "totp_secret": ""
+    },
+    {
+      "email": "account2@gmail.com",
+      "password": "password2",
+      "totp_secret": "JBSWY3DPEHPK3PXP"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# Real config (contains credentials – never commit)
+config.json
+account_pool.json
+
+# Debug screenshots generated on login failure
+*.png
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/

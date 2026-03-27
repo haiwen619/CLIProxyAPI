@@ -1,0 +1,6 @@
+# Core dependencies
+playwright>=1.44.0
+httpx>=0.27.0
+
+# Optional: required only if any account uses TOTP / 2FA
+# pip install pyotp

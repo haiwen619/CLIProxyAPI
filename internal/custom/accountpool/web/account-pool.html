@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账号池 | CLI Proxy API</title>
+  <link rel="stylesheet" href="/account-pool/assets/page.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">CP</div>
+        <div>
+          <div class="brand-title">CLI Proxy API</div>
+          <div class="brand-subtitle">Account Pool</div>
+        </div>
+      </div>
+      <nav class="side-nav">
+        <a class="side-link" href="/management.html">返回管理面板</a>
+        <a class="side-link active" href="/account-pool">账号池</a>
+      </nav>
+      <div class="side-note">
+        <div>独立数据文件</div>
+        <div class="side-note-path" id="poolPathSidebar">pythonLoginRpa/account_pool.json</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">账号池</p>
+          <h1>批量登录账号管理</h1>
+          <p class="page-desc">围绕 <code>pythonLoginRpa</code> 独立维护账号数据，导出后可直接供批量登录脚本使用。</p>
+        </div>
+        <div class="header-actions">
+          <button class="ghost" id="refreshBtn" type="button">刷新</button>
+          <a class="ghost" href="/management.html">管理面板</a>
+        </div>
+      </header>
+
+      <section class="auth-banner hidden" id="authBanner">
+        <div>
+          <strong>需要管理密钥</strong>
+          <p>当前页面会优先复用管理面板的登录态；如果没有拿到密钥，请手动输入。</p>
+        </div>
+        <form id="authForm" class="auth-form">
+          <input id="managementKeyInput" type="password" placeholder="输入管理密钥" autocomplete="current-password">
+          <button type="submit">保存并连接</button>
+        </form>
+      </section>
+
+      <section class="stats-grid">
+        <article class="stat-card">
+          <span class="stat-label">总账号数</span>
+          <strong id="statTotal">0</strong>
+          <span class="stat-meta">账号池规模</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">启用账号</span>
+          <strong id="statEnabled">0</strong>
+          <span class="stat-meta">导出时会写入 config.json</span>
+        </article>
+        <article class="stat-card warn">
+          <span class="stat-label">已配置 TOTP</span>
+          <strong id="statTotp">0</strong>
+          <span class="stat-meta">支持 2FA 账号</span>
+        </article>
+        <article class="stat-card soft">
+          <span class="stat-label">缺少密码</span>
+          <strong id="statMissingPassword">0</strong>
+          <span class="stat-meta">建议补全后再导出</span>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <input id="searchInput" type="search" placeholder="搜索邮箱、标签、备注">
+          <select id="statusFilter">
+            <option value="all">全部状态</option>
+            <option value="enabled">仅启用</option>
+            <option value="disabled">仅停用</option>
+            <option value="totp">仅 TOTP</option>
+          </select>
+          <button id="addBtn" type="button">添加账号</button>
+          <button id="batchBtn" type="button">批量导入</button>
+          <button id="importConfigBtn" type="button">从 config.json 导入</button>
+          <button id="exportConfigBtn" type="button">导出到 config.json</button>
+        </div>
+        <div class="meta-strip">
+          <span>账号池文件: <code id="poolPath">-</code></span>
+          <span>批量登录配置: <code id="configPath">-</code></span>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>账号信息</th>
+                <th>标签</th>
+                <th>密码</th>
+                <th>TOTP</th>
+                <th>状态</th>
+                <th>更新时间</th>
+                <th class="actions-col">操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountTableBody">
+              <tr>
+                <td colspan="7" class="empty-row">加载中...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal hidden" id="accountModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="accountModalTitle">添加账号</h2>
+        <button class="icon-btn" id="closeAccountModal" type="button">×</button>
+      </div>
+      <form id="accountForm" class="form-grid">
+        <input type="hidden" id="accountId">
+        <label>
+          <span>邮箱</span>
+          <input id="accountEmail" type="email" required placeholder="name@example.com">
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="accountPassword" type="text" placeholder="账号密码">
+        </label>
+        <label>
+          <span>TOTP Secret</span>
+          <input id="accountTotp" type="text" placeholder="Base32，可留空">
+        </label>
+        <label>
+          <span>标签</span>
+          <input id="accountTags" type="text" placeholder="用逗号分隔，例如: 新号,主力">
+        </label>
+        <label class="full">
+          <span>备注</span>
+          <textarea id="accountNotes" rows="4" placeholder="补充说明"></textarea>
+        </label>
+        <label class="toggle">
+          <input id="accountEnabled" type="checkbox" checked>
+          <span>导出时启用该账号</span>
+        </label>
+        <div class="modal-actions full">
+          <button class="ghost" id="cancelAccountModal" type="button">取消</button>
+          <button id="saveAccountBtn" type="submit">保存账号</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="batchModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2>批量导入</h2>
+        <button class="icon-btn" id="closeBatchModal" type="button">×</button>
+      </div>
+      <div class="batch-help">
+        支持两种格式:
+        <code>[{"email":"a@b.com","password":"123","totp_secret":""}]</code>
+        或每行一个
+        <code>email,password,totp_secret</code>
+      </div>
+      <textarea id="batchInput" rows="12" placeholder='[{"email":"a@example.com","password":"123456","totp_secret":""}]'></textarea>
+      <div class="modal-actions">
+        <button class="ghost" id="cancelBatchModal" type="button">取消</button>
+        <button id="submitBatchBtn" type="button">覆盖导入</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="runModal">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <h2>认证登录结果</h2>
+        <button class="icon-btn" id="closeRunModal" type="button">×</button>
+      </div>
+      <div class="run-summary" id="runSummary">等待执行</div>
+      <div class="run-auth-block">
+        <div class="run-auth-title">获取到的认证文件</div>
+        <div id="runAuthFiles" class="run-auth-list">暂无</div>
+      </div>
+      <div class="run-auth-title">脚本输出</div>
+      <pre id="runOutput" class="run-output">暂无输出</pre>
+      <div class="modal-actions">
+        <button class="ghost" id="closeRunModalFooter" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script defer src="/account-pool/assets/page.js"></script>
+</body>
+</html>

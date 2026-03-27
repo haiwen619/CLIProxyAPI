@@ -4,6 +4,14 @@
 
 go build -o cli-proxy-api.exe ./cmd/server
 
+-s — 去掉符号表
+-w — 去掉 DWARF 调试信息
+
+发布：
+go build -ldflags="-s -w" -o cli-proxy-api.exe ./cmd/server
+jHrrRDxVD5twXN2t
+
+
 [English](README.md) | 中文
 
 一个为 CLI 提供 OpenAI/Gemini/Claude/Codex 兼容 API 接口的代理服务器。

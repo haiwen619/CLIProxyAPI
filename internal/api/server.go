@@ -322,6 +322,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/account-pool", s.accountPool.ServePage)
 	s.engine.GET("/account-pool/assets/:name", s.accountPool.ServeAsset)

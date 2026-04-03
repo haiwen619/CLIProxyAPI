@@ -44,6 +44,7 @@
     accountTags: document.getElementById("accountTags"),
     accountNotes: document.getElementById("accountNotes"),
     accountEnabled: document.getElementById("accountEnabled"),
+    accountVerifyUrl: document.getElementById("accountVerifyUrl"),
     batchModal: document.getElementById("batchModal"),
     closeBatchModal: document.getElementById("closeBatchModal"),
     cancelBatchModal: document.getElementById("cancelBatchModal"),
@@ -191,6 +192,7 @@
           <div class="account-main">
             <span class="account-email">${escapeHtml(item.email)}</span>
             <span class="account-notes">${escapeHtml(item.notes || "无备注")}</span>
+            ${item.verify_url ? '<span class="account-notes" title="' + escapeHtml(item.verify_url) + '">🔗 小黑验证URL</span>' : ""}
           </div>
         </td>
         <td><div class="tag-list">${tags || '<span class="account-notes">未设置</span>'}</div></td>
@@ -245,6 +247,7 @@
     els.accountTotp.value = item.totp_secret || "";
     els.accountTags.value = (item.tags || []).join(", ");
     els.accountNotes.value = item.notes || "";
+    els.accountVerifyUrl.value = item.verify_url || "";
     els.accountEnabled.checked = item.id ? Boolean(item.enabled) : true;
     els.accountModal.classList.remove("hidden");
   }
@@ -396,6 +399,7 @@
       email: els.accountEmail.value.trim(),
       password: els.accountPassword.value.trim(),
       totp_secret: els.accountTotp.value.trim(),
+      verify_url: els.accountVerifyUrl.value.trim(),
       enabled: els.accountEnabled.checked,
       tags: els.accountTags.value.split(",").map((item) => item.trim()).filter(Boolean),
       notes: els.accountNotes.value.trim(),
@@ -474,24 +478,72 @@
     if (!text) {
       throw new Error("请先输入导入内容");
     }
-    if (text.startsWith("[")) {
-      const payload = JSON.parse(text);
-      if (!Array.isArray(payload)) {
-        throw new Error("JSON 必须是数组");
+    if (text.startsWith("[") || text.startsWith("{")) {
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (error) {
+        throw new Error(`JSON 格式错误: ${error.message}`);
       }
-      return payload.map((item) => ({
-        email: String(item.email || "").trim(),
-        password: String(item.password || "").trim(),
-        totp_secret: String(item.totp_secret || "").trim(),
-        enabled: item.enabled !== false,
-        tags: Array.isArray(item.tags) ? item.tags : [],
-        notes: String(item.notes || "").trim(),
-      }));
+
+      const records = Array.isArray(payload)
+        ? payload
+        : (payload && typeof payload === "object" && Array.isArray(payload.accounts) ? payload.accounts : null);
+
+      if (!records) {
+        throw new Error("JSON 仅支持数组，或 {\"accounts\":[...]} 格式");
+      }
+      if (records.length === 0) {
+        throw new Error("导入列表不能为空");
+      }
+
+      return records.map((item, index) => normalizeImportAccount(item, index));
     }
-    return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+
+    if (/(^|\n)\s*(邮箱|email)\s*[：:]/i.test(text)) {
+      return parseLabeledAccounts(text);
+    }
+
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      throw new Error("导入列表不能为空");
+    }
+
+    return lines.map((line, index) => {
+      if (line.includes("----")) {
+        const parts = line.split("----").map((item) => item.trim());
+        if (parts.length < 3) {
+          throw new Error(`第 ${index + 1} 行格式错误，应为 email----password----verify_url----...`);
+        }
+        const email = parts[0] || "";
+        const verifyUrl = parts[2] || "";
+        if (!looksLikeEmail(email)) {
+          throw new Error(`第 ${index + 1} 行邮箱格式不正确: ${email || "空值"}`);
+        }
+        if (!/^https?:\/\//i.test(verifyUrl)) {
+          throw new Error(`第 ${index + 1} 行验证码 URL 格式不正确: ${verifyUrl || "空值"}`);
+        }
+        return {
+          email,
+          password: parts[1] || "",
+          totp_secret: "",
+          verify_url: verifyUrl,
+          enabled: true,
+          tags: [],
+          notes: "",
+        };
+      }
+
       const parts = line.split(",").map((item) => item.trim());
+      if (parts.length < 2 || parts.length > 3) {
+        throw new Error(`第 ${index + 1} 行格式错误，应为 email,password[,totp_secret]`);
+      }
+      const email = parts[0] || "";
+      if (!looksLikeEmail(email)) {
+        throw new Error(`第 ${index + 1} 行邮箱格式不正确: ${email || "空值"}`);
+      }
       return {
-        email: parts[0] || "",
+        email,
         password: parts[1] || "",
         totp_secret: parts[2] || "",
         enabled: true,
@@ -501,13 +553,124 @@
     });
   }
 
+  function normalizeImportAccount(item, index) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`第 ${index + 1} 项必须是对象`);
+    }
+
+    const email = String(item.email || "").trim();
+    if (!email) {
+      throw new Error(`第 ${index + 1} 项缺少 email`);
+    }
+    if (!looksLikeEmail(email)) {
+      throw new Error(`第 ${index + 1} 项邮箱格式不正确: ${email}`);
+    }
+
+    const tags = Array.isArray(item.tags)
+      ? item.tags.map((tag) => String(tag || "").trim()).filter(Boolean)
+      : [];
+
+    return {
+      email,
+      password: String(item.password || "").trim(),
+      totp_secret: String(item.totp_secret || "").trim(),
+      verify_url: String(item.verify_url || item.verifyUrl || "").trim(),
+      enabled: item.enabled !== false,
+      tags,
+      notes: String(item.notes || "").trim(),
+    };
+  }
+
+  function looksLikeEmail(value) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+  }
+
+  function parseLabeledAccounts(text) {
+    const lines = text.split(/\r?\n/).map((line) => line.trim());
+    const accounts = [];
+    let current = null;
+
+    for (const line of lines) {
+      if (!line) {
+        if (current) {
+          accounts.push(finalizeLabeledAccount(current, accounts.length));
+          current = null;
+        }
+        continue;
+      }
+
+      const match = line.match(/^(邮箱|email|密码|password|totp|totp_secret|2fa|otp|verify_url|verifyurl|验证码url|验证码地址)\s*[：:]\s*(.+)$/i);
+      if (!match) {
+        throw new Error(`标签格式错误: ${line}`);
+      }
+
+      const rawKey = match[1].toLowerCase();
+      const value = match[2].trim();
+      if (!current) {
+        current = {};
+      }
+
+      if (rawKey === "邮箱" || rawKey === "email") {
+        if (current.email) {
+          accounts.push(finalizeLabeledAccount(current, accounts.length));
+          current = {};
+        }
+        current.email = value;
+        continue;
+      }
+
+      if (rawKey === "密码" || rawKey === "password") {
+        current.password = value;
+        continue;
+      }
+
+      if (rawKey === "verify_url" || rawKey === "verifyurl" || rawKey === "验证码url" || rawKey === "验证码地址") {
+        current.verify_url = value;
+        continue;
+      }
+
+      current.totp_secret = value;
+    }
+
+    if (current) {
+      accounts.push(finalizeLabeledAccount(current, accounts.length));
+    }
+    if (accounts.length === 0) {
+      throw new Error("未解析到可导入的账号");
+    }
+    return accounts;
+  }
+
+  function finalizeLabeledAccount(item, index) {
+    const email = String(item.email || "").trim();
+    const password = String(item.password || "").trim();
+    if (!email) {
+      throw new Error(`第 ${index + 1} 组缺少邮箱`);
+    }
+    if (!looksLikeEmail(email)) {
+      throw new Error(`第 ${index + 1} 组邮箱格式不正确: ${email}`);
+    }
+    if (!password) {
+      throw new Error(`第 ${index + 1} 组缺少密码`);
+    }
+    return {
+      email,
+      password,
+      totp_secret: String(item.totp_secret || "").trim(),
+      verify_url: String(item.verify_url || "").trim(),
+      enabled: true,
+      tags: [],
+      notes: "",
+    };
+  }
+
   async function submitBatchImport() {
     try {
       const accounts = parseBatchInput(els.batchInput.value);
-      await request("/accounts", { method: "PUT", body: JSON.stringify({ accounts }) });
+      const result = await request("/accounts", { method: "PATCH", body: JSON.stringify({ accounts }) });
       closeBatchModal();
       await loadState();
-      showToast(`已覆盖导入 ${accounts.length} 个账号`);
+      showToast(`导入完成：新增 ${result.added || 0} 个，更新 ${result.updated || 0} 个`);
     } catch (error) {
       showToast(error.message || "批量导入失败", true);
     }

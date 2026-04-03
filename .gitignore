@@ -1,6 +1,7 @@
 # Binaries
 cli-proxy-api
 *.exe
+*.exe~
 
 # Configuration
 config.yaml
@@ -45,6 +46,10 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+
+# Go local cache directories
+.gocache*/
+.gomodcache*/
 
 # macOS
 .DS_Store

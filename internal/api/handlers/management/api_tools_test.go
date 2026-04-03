@@ -2,9 +2,13 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -109,5 +113,69 @@ func TestAuthByIndexDistinguishesSharedAPIKeysAcrossProviders(t *testing.T) {
 	}
 	if gotCompat.ID != compatAuth.ID {
 		t.Fatalf("authByIndex(compat) returned %q, want %q", gotCompat.ID, compatAuth.ID)
+	}
+}
+
+func TestAPICallDisablesAuthOnInvalidatedToken401(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("Your authentication token has been invalidated. Please try signing in again."))
+	}))
+	defer upstream.Close()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-invalidated-auth",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token": "test-token",
+		},
+	}
+	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+	authIndex := auth.EnsureIndex()
+
+	h := &Handler{authManager: manager}
+	bodyBytes, errMarshal := json.Marshal(apiCallRequest{
+		AuthIndexSnake: &authIndex,
+		Method:         http.MethodGet,
+		URL:            upstream.URL,
+		Header: map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+		},
+	})
+	if errMarshal != nil {
+		t.Fatalf("marshal body: %v", errMarshal)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	h.APICall(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("APICall status = %d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	updated, ok := manager.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatal("updated auth not found")
+	}
+	if !updated.Disabled {
+		t.Fatal("expected auth to be disabled")
+	}
+	if updated.Status != coreauth.StatusDisabled {
+		t.Fatalf("auth status = %q, want %q", updated.Status, coreauth.StatusDisabled)
+	}
+	if updated.StatusMessage != "disabled: authentication token invalidated" {
+		t.Fatalf("status message = %q", updated.StatusMessage)
 	}
 }

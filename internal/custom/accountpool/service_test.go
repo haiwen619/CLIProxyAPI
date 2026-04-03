@@ -101,6 +101,54 @@ func TestImportConfigReplacesPool(t *testing.T) {
 	}
 }
 
+func TestPrepareReplacementAccountsRejectsEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	accounts, err := prepareReplacementAccounts(nil, "2026-03-27T00:00:00Z")
+	if err == nil {
+		t.Fatal("expected error for empty input")
+	}
+	if accounts != nil {
+		t.Fatalf("expected nil accounts on error, got %v", accounts)
+	}
+}
+
+func TestArrayImportShapeCanBeNormalized(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`[
+  {
+    "email": "ncarson697@ssd.baileybridge.org",
+    "password": "xjDrkDjVA4znQ4q$",
+    "registered_at": "2026-03-26T17:39:38.030395"
+  },
+  {
+    "email": "tchapman943@dayhzuj.shop",
+    "password": "DrTjSl!vtq4Uy90b",
+    "registered_at": "2026-03-27T13:57:56.579971"
+  }
+]`)
+
+	var imported []Account
+	if err := json.Unmarshal(raw, &imported); err != nil {
+		t.Fatalf("unmarshal array import: %v", err)
+	}
+
+	accounts, err := prepareReplacementAccounts(imported, "2026-03-27T00:00:00Z")
+	if err != nil {
+		t.Fatalf("prepareReplacementAccounts: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Fatalf("expected 2 accounts, got %d", len(accounts))
+	}
+	if accounts[0].Email != "ncarson697@ssd.baileybridge.org" {
+		t.Fatalf("unexpected first email: %q", accounts[0].Email)
+	}
+	if accounts[1].Password != "DrTjSl!vtq4Uy90b" {
+		t.Fatalf("unexpected second password: %q", accounts[1].Password)
+	}
+}
+
 func TestPythonExecEnvIncludesUnbufferedAndVirtualEnv(t *testing.T) {
 	t.Parallel()
 

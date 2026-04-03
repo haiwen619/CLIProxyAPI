@@ -2054,6 +2054,17 @@ func isModelSupportResultError(err *Error) bool {
 	return isModelSupportErrorMessage(err.Message)
 }
 
+func shouldDisableAuthForInvalidatedToken(statusCode int, message string) bool {
+	if statusCode != http.StatusUnauthorized {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "authentication token has been invalidated")
+}
+
 // isRequestInvalidError returns true if the error represents a client request
 // error that should not be retried. Specifically, it treats 400 responses with
 // "invalid_request_error" and all 422 responses as request-shape failures,
@@ -2816,6 +2827,22 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
+		if shouldDisableAuthForInvalidatedToken(statusCodeFromError(err), err.Error()) {
+			disabled := auth.Clone()
+			disabled.Disabled = true
+			disabled.Status = StatusDisabled
+			disabled.StatusMessage = "disabled: authentication token invalidated"
+			disabled.Unavailable = false
+			disabled.NextRefreshAfter = time.Time{}
+			disabled.NextRetryAfter = time.Time{}
+			disabled.LastError = &Error{
+				Message:    err.Error(),
+				HTTPStatus: statusCodeFromError(err),
+			}
+			disabled.UpdatedAt = now
+			_, _ = m.Update(ctx, disabled)
+			return
+		}
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
 			current.NextRefreshAfter = now.Add(refreshFailureBackoff)

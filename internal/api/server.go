@@ -650,6 +650,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/account-pool", s.accountPool.GetState)
 		mgmt.POST("/account-pool/accounts", s.accountPool.CreateAccount)
 		mgmt.PUT("/account-pool/accounts", s.accountPool.ReplaceAccounts)
+		mgmt.PATCH("/account-pool/accounts", s.accountPool.MergeAccounts)
 		mgmt.PUT("/account-pool/accounts/:id", s.accountPool.UpdateAccount)
 		mgmt.PATCH("/account-pool/accounts/:id/status", s.accountPool.PatchStatus)
 		mgmt.DELETE("/account-pool/accounts/:id", s.accountPool.DeleteAccount)

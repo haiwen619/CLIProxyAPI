@@ -43,12 +43,22 @@ try:
 except ImportError:
     from playwright.async_api import async_playwright, Page
 
+try:
+    from xiaohei_mail import wait_for_code as _xh_wait_code, parse_account as _xh_parse_account
+    _XIAOHEI_AVAILABLE = True
+except ImportError:
+    _XIAOHEI_AVAILABLE = False
+
 # ═══════════════════════════ 配置区 ═══════════════════════════
 NPCMAIL_API_KEY  = "sk-hvvr8yimqCKm"   # NPCmail 密钥
 NPCMAIL_BASE     = "https://moemail.nanohajimi.mom"
 GPTMAIL_API_KEY  = "sk-hvvr8yimqCKm"          # GPTMail 密钥
 GPTMAIL_BASE     = "https://mail.chatgpt.org.uk"
-EMAIL_PROVIDER   = "gptmail"    # "npcmail" | "gptmail"
+EMAIL_PROVIDER   = "gptmail"    # "npcmail" | "gptmail" | "xiaohei"
+# 小黑平台配置（EMAIL_PROVIDER="xiaohei" 时生效）
+#   账号文件每行格式：email----password----verifyUrl[----...（其余字段忽略）]
+XIAOHEI_ACCOUNTS_FILE = ""      # 小黑账号数据文件路径，留空则仅支持单账号模式
+XIAOHEI_VERIFY_URL    = ""      # 单账号直接填写 verify_url，多账号从文件读取
 HEADLESS         = False        # True = 无头后台；False = 可见浏览器
 TIMEOUT_SECS     = 300          # 单账号最大等待秒数
 HTTP_PROXY       = "http://127.0.0.1:6987"  # 本地代理，设为 "" 则不使用
@@ -64,6 +74,51 @@ GM_STORE_FILE = ROOT / ".tm-gm-store.json"
 REQUESTS_LOG_DIR = ROOT / "requests_log"
 # 只记录这两个域名下的请求（Sentinel 人机验证 + OpenAI Auth API）
 _CAPTURE_DOMAINS = ("sentinel.openai.com", "auth.openai.com")
+
+
+# ──────────────────────────────────────────────────────────────
+#  小黑账号：email -> verify_url 映射
+# ──────────────────────────────────────────────────────────────
+def _load_xiaohei_verify_map() -> dict[str, str]:
+    """
+    从 XIAOHEI_ACCOUNTS_FILE 加载 email -> verify_url 映射。
+    每行格式：email----password----verifyUrl[----...（其余字段忽略）]
+    同时把 XIAOHEI_VERIFY_URL 单账号配置作为兜底写入（key 为空字符串）。
+    """
+    result: dict[str, str] = {}
+    if XIAOHEI_VERIFY_URL:
+        result[""] = XIAOHEI_VERIFY_URL.strip()
+
+    path = XIAOHEI_ACCOUNTS_FILE
+    if not path:
+        return result
+    file_path = Path(path)
+    if not file_path.is_absolute():
+        file_path = ROOT / path
+    if not file_path.exists():
+        print(f"[xiaohei] 账号文件不存在: {file_path}")
+        return result
+    try:
+        for lineno, raw in enumerate(file_path.read_text(encoding="utf-8").splitlines(), 1):
+            line = raw.strip()
+            if not line or line.startswith("#") or "----" not in line:
+                continue
+            parts = [p.strip() for p in line.split("----")]
+            if len(parts) < 3:
+                print(f"[xiaohei] 第 {lineno} 行字段不足（需要 email----password----verifyUrl）")
+                continue
+            email_key = parts[0].lower()
+            verify_url = parts[2]
+            if email_key and verify_url.startswith("http"):
+                result[email_key] = verify_url
+            else:
+                print(f"[xiaohei] 第 {lineno} 行数据无效（邮箱或 URL 格式错误）")
+    except Exception as exc:
+        print(f"[xiaohei] 读取账号文件失败: {exc}")
+    return result
+
+
+_XIAOHEI_VERIFY_MAP: dict[str, str] = _load_xiaohei_verify_map()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -256,6 +311,9 @@ def _gm_config_values() -> dict:
         "tm_team_key":          "",
         "tm_sync_url":          "",
         "tm_sync_apikey":       "",
+        # 小黑平台：单账号 verify_url 直接写入 GM，
+        # 多账号场景由 Python 侧在取到注册邮箱后按 email 查表
+        "tm_xiaohei_verify_url": XIAOHEI_VERIFY_URL,
     }
 
 
@@ -554,7 +612,7 @@ def _to_npcmail_array(data) -> list[dict]:
     return []
 
 
-async def _fetch_latest_email_info(email: str, provider: str | None = None) -> dict:
+async def _fetch_latest_email_info(email: str, provider: str | None = None, *, verify_url: str = "") -> dict:
     provider = (provider or EMAIL_PROVIDER or "gptmail").strip().lower()
     proxy = HTTP_PROXY or None
 
@@ -667,6 +725,34 @@ async def _fetch_latest_email_info(email: str, provider: str | None = None) -> d
                     "verification_code": code,
                     "error": "",
                 })
+                return info
+
+            if provider == "xiaohei":
+                url = verify_url or _XIAOHEI_VERIFY_MAP.get(email.strip().lower(), "") or _XIAOHEI_VERIFY_MAP.get("", "")
+                if not url:
+                    info["error"] = f"小黑账号 {email} 未配置 verify_url，请在 XIAOHEI_ACCOUNTS_FILE 或 XIAOHEI_VERIFY_URL 中设置"
+                    return info
+                if not _XIAOHEI_AVAILABLE:
+                    info["error"] = "xiaohei_mail 模块不可用，请确认 xiaohei_mail.py 在同目录"
+                    return info
+                code = await _xh_wait_code(
+                    url,
+                    max_retries=20,
+                    interval=3.0,
+                    timeout=15,
+                    proxy=HTTP_PROXY or "",
+                )
+                if code:
+                    info.update({
+                        "ok": True,
+                        "subject": "Microsoft 验证码邮件（小黑平台）",
+                        "from": "Microsoft",
+                        "verification_code": code,
+                        "content": f"验证码: {code}",
+                        "error": "",
+                    })
+                else:
+                    info["error"] = "小黑平台轮询超时，未获取到验证码"
                 return info
 
             info["error"] = f"不支持的邮箱提供商: {provider}"
@@ -1016,7 +1102,8 @@ async def _register_one(
                     log(f"  [!] 注册后页面异常，判定失败: {reason}")
                 else:
                     log("  → 主动查询最近邮件...")
-                    latest_mail = await _fetch_latest_email_info(result["email"], EMAIL_PROVIDER)
+                    _vurl = _XIAOHEI_VERIFY_MAP.get(result["email"].strip().lower(), "") if EMAIL_PROVIDER == "xiaohei" else ""
+                    latest_mail = await _fetch_latest_email_info(result["email"], EMAIL_PROVIDER, verify_url=_vurl)
                     result["latest_mail"] = latest_mail
                     if latest_mail.get("ok"):
                         subject = latest_mail.get("subject") or "(无主题)"
@@ -1162,6 +1249,15 @@ async def _main(
     print("=" * 52)
     print(f"  ChatGPT Auto-Register")
     print(f"  账号数: {count}  |  邮箱: {EMAIL_PROVIDER}  |  无头: {HEADLESS}")
+    if EMAIL_PROVIDER == "xiaohei":
+        account_count = len([k for k in _XIAOHEI_VERIFY_MAP if k])
+        single_url = _XIAOHEI_VERIFY_MAP.get("", "")
+        if account_count:
+            print(f"  小黑账号文件: {XIAOHEI_ACCOUNTS_FILE}（已加载 {account_count} 条）")
+        elif single_url:
+            print(f"  小黑 verify_url: {single_url[:60]}...")
+        else:
+            print("  [!] 小黑平台未配置 verify_url，请设置 XIAOHEI_VERIFY_URL 或 XIAOHEI_ACCOUNTS_FILE")
     if concurrency > 1:
         print(f"  并发: {concurrency}（本地上限默认 {DEFAULT_CONCURRENCY}）")
         print("  模式: concurrent 并发独立 profile")

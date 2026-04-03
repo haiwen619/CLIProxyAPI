@@ -38,6 +38,7 @@ type Account struct {
 	Email      string   `json:"email"`
 	Password   string   `json:"password"`
 	TOTPSecret string   `json:"totp_secret"`
+	VerifyURL  string   `json:"verify_url,omitempty"`
 	Enabled    bool     `json:"enabled"`
 	Tags       []string `json:"tags,omitempty"`
 	Notes      string   `json:"notes,omitempty"`
@@ -77,6 +78,7 @@ type importConfigAccount struct {
 	Email      string `json:"email"`
 	Password   string `json:"password"`
 	TOTPSecret string `json:"totp_secret"`
+	VerifyURL  string `json:"verify_url"`
 }
 
 type exportConfigResult struct {
@@ -309,6 +311,79 @@ func (s *Service) UpdateAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, s.makeStateResponse(doc))
 }
 
+func (s *Service) MergeAccounts(c *gin.Context) {
+	var req replaceAccountsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.Accounts) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "accounts must not be empty"})
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	doc, err := s.loadLocked()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	added, updated := 0, 0
+	for _, incoming := range req.Accounts {
+		emailKey := strings.ToLower(strings.TrimSpace(incoming.Email))
+		if emailKey == "" {
+			continue
+		}
+		idx := slices.IndexFunc(doc.Accounts, func(item Account) bool {
+			return strings.ToLower(strings.TrimSpace(item.Email)) == emailKey
+		})
+		if idx >= 0 {
+			// update existing: overwrite password / totp_secret / verify_url when provided
+			existing := doc.Accounts[idx]
+			if pw := strings.TrimSpace(incoming.Password); pw != "" {
+				existing.Password = pw
+			}
+			if totp := strings.TrimSpace(incoming.TOTPSecret); totp != "" {
+				existing.TOTPSecret = totp
+			}
+			if verifyURL := strings.TrimSpace(incoming.VerifyURL); verifyURL != "" {
+				existing.VerifyURL = verifyURL
+			}
+			existing.UpdatedAt = now
+			doc.Accounts[idx] = existing
+			updated++
+		} else {
+			normalized := normalizeAccount(incoming, now, Account{})
+			normalized.ID = uuid.NewString()
+			normalized.CreatedAt = now
+			normalized.UpdatedAt = now
+			normalized.Enabled = true
+			doc.Accounts = append(doc.Accounts, normalized)
+			added++
+		}
+	}
+
+	s.sortAccounts(doc.Accounts)
+	if err := s.saveLocked(doc); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := s.makeStateResponse(doc)
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":    resp.Accounts,
+		"summary":     resp.Summary,
+		"file_path":   resp.FilePath,
+		"config_path": resp.ConfigPath,
+		"added":       added,
+		"updated":     updated,
+	})
+}
+
 func (s *Service) ReplaceAccounts(c *gin.Context) {
 	var req replaceAccountsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -320,24 +395,10 @@ func (s *Service) ReplaceAccounts(c *gin.Context) {
 	defer s.mu.Unlock()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	accounts := make([]Account, 0, len(req.Accounts))
-	for _, item := range req.Accounts {
-		normalized := normalizeAccount(item, now, Account{})
-		if normalized.ID == "" {
-			normalized.ID = uuid.NewString()
-		}
-		if normalized.CreatedAt == "" {
-			normalized.CreatedAt = now
-		}
-		normalized.UpdatedAt = now
-		accounts = append(accounts, normalized)
-	}
-
-	for _, item := range accounts {
-		if err := validateAccount(item, accounts, item.ID); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+	accounts, err := prepareReplacementAccounts(req.Accounts, now)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	doc := document{
@@ -648,6 +709,7 @@ func (s *Service) importConfigLocked() (document, error) {
 			Email:      item.Email,
 			Password:   item.Password,
 			TOTPSecret: item.TOTPSecret,
+			VerifyURL:  item.VerifyURL,
 			Enabled:    true,
 		}, now, Account{})
 		acc.ID = uuid.NewString()
@@ -706,6 +768,7 @@ func (s *Service) exportConfigLocked() (exportConfigResult, error) {
 			"email":       item.Email,
 			"password":    item.Password,
 			"totp_secret": item.TOTPSecret,
+			"verify_url":  item.VerifyURL,
 		})
 	}
 
@@ -823,6 +886,7 @@ func (s *Service) writeSingleAccountConfig(account Account, managementKey string
 		"email":       account.Email,
 		"password":    account.Password,
 		"totp_secret": account.TOTPSecret,
+		"verify_url":  account.VerifyURL,
 	}}
 	if _, ok := payload["headless"]; !ok {
 		payload["headless"] = true
@@ -1124,6 +1188,7 @@ func normalizeAccount(input Account, now string, base Account) Account {
 	out.Email = strings.TrimSpace(input.Email)
 	out.Password = strings.TrimSpace(input.Password)
 	out.TOTPSecret = strings.TrimSpace(input.TOTPSecret)
+	out.VerifyURL = strings.TrimSpace(input.VerifyURL)
 	out.Enabled = input.Enabled
 	if input.ID != "" {
 		out.ID = strings.TrimSpace(input.ID)
@@ -1180,6 +1245,32 @@ func validateAccount(account Account, accounts []Account, currentID string) erro
 	return nil
 }
 
+func prepareReplacementAccounts(items []Account, now string) ([]Account, error) {
+	if len(items) == 0 {
+		return nil, errors.New("accounts must not be empty")
+	}
+
+	accounts := make([]Account, 0, len(items))
+	for _, item := range items {
+		normalized := normalizeAccount(item, now, Account{})
+		if normalized.ID == "" {
+			normalized.ID = uuid.NewString()
+		}
+		if normalized.CreatedAt == "" {
+			normalized.CreatedAt = now
+		}
+		normalized.UpdatedAt = now
+		accounts = append(accounts, normalized)
+	}
+
+	for _, item := range accounts {
+		if err := validateAccount(item, accounts, item.ID); err != nil {
+			return nil, err
+		}
+	}
+	return accounts, nil
+}
+
 func (s *Service) loadLocked() (document, error) {
 	if data, err := os.ReadFile(s.filePath); err == nil {
 		if len(bytes.TrimSpace(data)) == 0 {
@@ -1207,6 +1298,7 @@ func (s *Service) loadLocked() (document, error) {
 			doc.Accounts[i].Email = strings.TrimSpace(doc.Accounts[i].Email)
 			doc.Accounts[i].Password = strings.TrimSpace(doc.Accounts[i].Password)
 			doc.Accounts[i].TOTPSecret = strings.TrimSpace(doc.Accounts[i].TOTPSecret)
+			doc.Accounts[i].VerifyURL = strings.TrimSpace(doc.Accounts[i].VerifyURL)
 			doc.Accounts[i].Tags = normalizeTags(doc.Accounts[i].Tags)
 			doc.Accounts[i].Notes = strings.TrimSpace(doc.Accounts[i].Notes)
 		}

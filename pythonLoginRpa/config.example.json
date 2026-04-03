@@ -5,6 +5,10 @@
   "mgmt_key": "123456",
 
   "headless": true,
+  "timeout_sec": 60,
+  "debug_mode": false,
+  "keep_browser_open_on_timeout": false,
+  "mail_provider": "gptmail",
 
   "delay_between_accounts": 3,
 
@@ -12,12 +16,21 @@
     {
       "email": "account1@gmail.com",
       "password": "password1",
-      "totp_secret": ""
+      "totp_secret": "",
+      "verify_url": ""
     },
     {
       "email": "account2@gmail.com",
       "password": "password2",
-      "totp_secret": "JBSWY3DPEHPK3PXP"
+      "totp_secret": "JBSWY3DPEHPK3PXP",
+      "verify_url": "https://xiaoheiapi.top/m/your-id/encoded%40outlook.com"
+    },
+    {
+      "_comment": "无密码账号：提交邮箱后直接进入邮件验证码步骤，password 留空即可",
+      "email": "nopassword@example.com",
+      "password": "",
+      "totp_secret": "",
+      "verify_url": "https://xiaoheiapi.top/m/your-id/encoded%40example.com"
     }
   ]
 }

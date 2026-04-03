@@ -146,11 +146,16 @@ async def _fill_openai_login(
     # 填写邮箱后随机停顿，避免点击节奏过于机械
     await asyncio.sleep(random.uniform(1.0, 2.6))
 
-    # 点击邮箱提交按钮，并等待页面跳转到密码页
+    # 点击邮箱提交按钮，并等待页面跳转到密码页或邮件验证页
     print("    [D] 点击提交（邮箱）…")
     async with page.expect_navigation(wait_until="domcontentloaded", timeout=15_000):
         await page.click('button[type="submit"][value="email"], button[type="submit"]')
     print(f"    [D] 跳转后页面 URL：{page.url}")
+
+    # ── 检测是否直接跳到邮件验证步骤（无需密码）──
+    if "email-verification" in page.url:
+        print("    [D] 检测到直接跳转至邮件验证步骤，跳过密码填写")
+        return
 
     # 等待密码框渲染稳定
     await asyncio.sleep(random.uniform(0.8, 1.5))
@@ -207,6 +212,7 @@ async def _handle_email_verification(
     page,
     email: str,
     mail_provider: str = "",
+    verify_url: str = "",
     proxy_url: str = "",
     max_wait: int = 90,
 ) -> None:
@@ -215,27 +221,53 @@ async def _handle_email_verification(
     轮询邮件获取验证码并自动填入提交。
     """
     try:
+        _tools_dir = str(Path(__file__).parent / "tools")
+        if _tools_dir not in sys.path:
+            sys.path.insert(0, _tools_dir)
         from mail_query import fetch_latest_email_info
     except ImportError:
         raise RuntimeError("缺少 mail_query.py，无法自动获取邮件验证码")
 
-    print("    [D] 检测到邮件验证步骤，开始轮询验证码…")
+    effective_provider = (mail_provider or "").strip().lower()
+    if verify_url.strip():
+        effective_provider = "xiaohei"
+    provider_label = effective_provider or "default"
+    masked_verify_url = ""
+    if verify_url.strip():
+        masked_verify_url = verify_url[:96] + ("..." if len(verify_url) > 96 else "")
+
+    print(f"    [D] 检测到邮件验证步骤，开始轮询验证码… provider={provider_label}")
+    if masked_verify_url:
+        print(f"    [D] 使用小黑 verify_url：{masked_verify_url}")
     code = ""
     for attempt in range(max_wait // 5):
         await asyncio.sleep(5)
         info = await fetch_latest_email_info(
             email,
-            provider=mail_provider or None,
+            provider=effective_provider or None,
             proxy=proxy_url or None,
+            verify_url=verify_url,
         )
         code = info.get("verification_code", "")
         if code:
             print(f"    [D] 获取到验证码：{code}")
             break
-        print(f"    [D] 等待验证码…（已等待 {(attempt + 1) * 5}s）")
+        waited = (attempt + 1) * 5
+        detail = info.get("error", "") or "暂无结果"
+        if effective_provider == "xiaohei":
+            status_code = info.get("request_status_code", 0)
+            body_preview = str(info.get("body_preview", "") or "")
+            if status_code:
+                detail = f"{detail} | HTTP {status_code}"
+            if body_preview:
+                detail = f"{detail} | 预览: {body_preview}"
+        print(f"    [D] 等待验证码…（已等待 {waited}s）{'' if not detail else f' | {detail}'}")
 
     if not code:
-        raise RuntimeError(f"等待邮件验证码超时（{max_wait}s）")
+        suffix = f" provider={provider_label}"
+        if masked_verify_url:
+            suffix += f" verify_url={masked_verify_url}"
+        raise RuntimeError(f"等待邮件验证码超时（{max_wait}s）{suffix}")
 
     code_selectors = [
         'input[autocomplete="one-time-code"]',
@@ -260,6 +292,38 @@ async def _handle_email_verification(
     print("    [D] 验证码已提交")
 
 
+async def _detect_terminal_auth_error(page: Page) -> str:
+    """
+    检测 OpenAI 认证链路里的终态错误页。
+    命中时返回错误说明，否则返回空字符串。
+    """
+    try:
+        body_text = await page.locator("body").inner_text(timeout=1_500)
+    except Exception:
+        return ""
+
+    normalized = " ".join(body_text.split()).lower()
+    if "account_deactivated" in normalized:
+        return "account_deactivated"
+    if "验证过程中出错" in body_text and "account_deactivated" in body_text:
+        return "account_deactivated"
+    if "this account has been deactivated" in normalized:
+        return "account_deactivated"
+    return ""
+
+
+async def _wait_for_manual_browser_close(context: BrowserContext) -> None:
+    """调试模式下等待用户手动关闭浏览器，避免脚本超时后立即收尾。"""
+    print("    [D] 调试模式：超时后不会自动关闭浏览器，请手动检查页面")
+    print("    [D] 关闭浏览器窗口后，脚本会继续执行")
+    while True:
+        open_pages = [p for p in context.pages if not p.is_closed()]
+        if not open_pages:
+            print("    [D] 已检测到浏览器窗口关闭")
+            return
+        await asyncio.sleep(1)
+
+
 async def browser_login_and_complete(
     client: ManagementClient,
     state: str,
@@ -267,12 +331,15 @@ async def browser_login_and_complete(
     email: str,
     password: str,
     totp_secret: str = "",
+    verify_url: str = "",
     headless: bool = True,
     timeout_sec: int = 60,
     proxy_url: str = "",
     mail_provider: str = "",
     browser_channel: str = "",
     inherit_system_proxy: bool = False,
+    debug_mode: bool = False,
+    keep_browser_open_on_timeout: bool = False,
 ) -> bool:
     """
     在 Chromium 浏览器中打开授权 URL，自动完成登录，
@@ -293,6 +360,7 @@ async def browser_login_and_complete(
         temp_profile = tempfile.TemporaryDirectory(prefix="codex-login-profile-")
         context: BrowserContext | None = None
         selected_channel = "chromium"
+        keep_browser_open = False
         try:
             launch_options = {
                 "headless": headless,
@@ -357,6 +425,11 @@ async def browser_login_and_complete(
                     await page.screenshot(path=str(shot))
                     print(f"    [!] 等待超时，调试截图已保存：{shot.name}")
                     print(f"    [D] 超时时当前页面 URL：{page.url}")
+                    keep_browser_open = debug_mode and keep_browser_open_on_timeout
+                    if keep_browser_open:
+                        if headless:
+                            print("    [D] 当前为 headless 模式，浏览器虽保留但不可见；建议调试时设置 headless=false")
+                        await _wait_for_manual_browser_close(context)
                     return False
                 if len(context.pages) != last_page_count:
                     last_page_count = len(context.pages)
@@ -365,6 +438,10 @@ async def browser_login_and_complete(
                     if latest_page is not None and latest_page is not page:
                         page = latest_page
                         print(f"    [D] 已切换到最新页签，当前 URL：{page.url}")
+                terminal_error = await _detect_terminal_auth_error(page)
+                if terminal_error == "account_deactivated":
+                    print("    [!] 检测到账号停用页面：account_deactivated，结束当前账号执行")
+                    return False
                 current_url = page.url
                 if current_url != last_url:
                     print(f"    [D] 页面跳转 → {current_url}")
@@ -372,7 +449,13 @@ async def browser_login_and_complete(
                     if "email-verification" in current_url and not email_verification_handled:
                         email_verification_handled = True
                         try:
-                            await _handle_email_verification(page, email, mail_provider, proxy_url)
+                            await _handle_email_verification(
+                                page,
+                                email,
+                                mail_provider=mail_provider,
+                                verify_url=verify_url,
+                                proxy_url=proxy_url,
+                            )
                         except Exception as ve:
                             print(f"    [!] 邮件验证失败：{ve}")
                             break
@@ -418,7 +501,13 @@ async def browser_login_and_complete(
                 pass
         finally:
             if context is not None:
-                await context.close()
+                if keep_browser_open:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                else:
+                    await context.close()
             temp_profile.cleanup()
             print("    [D] 浏览器已关闭")
 
@@ -434,11 +523,15 @@ async def login_one_account(
     email: str,
     password: str,
     totp_secret: str = "",
+    verify_url: str = "",
     headless: bool = True,
     proxy_url: str = "",
     mail_provider: str = "",
     browser_channel: str = "",
     inherit_system_proxy: bool = False,
+    timeout_sec: int = 60,
+    debug_mode: bool = False,
+    keep_browser_open_on_timeout: bool = False,
 ) -> bool:
     print(f"[*] {email}")
 
@@ -465,11 +558,15 @@ async def login_one_account(
             email=email,
             password=password,
             totp_secret=totp_secret,
+            verify_url=verify_url,
             headless=headless,
+            timeout_sec=timeout_sec,
             proxy_url=proxy_url,
             mail_provider=mail_provider,
             browser_channel=browser_channel,
             inherit_system_proxy=inherit_system_proxy,
+            debug_mode=debug_mode,
+            keep_browser_open_on_timeout=keep_browser_open_on_timeout,
         )
         if ok:
             print("    [+] 登录成功，凭证已保存")
@@ -500,6 +597,9 @@ async def batch_login(config: dict) -> None:
     mail_provider = config.get("mail_provider", "")
     browser_channel = config.get("browser_channel", "")
     inherit_system_proxy = bool(config.get("inherit_system_proxy", False))
+    timeout_sec = int(config.get("timeout_sec", 60) or 60)
+    debug_mode = bool(config.get("debug_mode", False))
+    keep_browser_open_on_timeout = bool(config.get("keep_browser_open_on_timeout", False))
     delay = config.get("delay_between_accounts", 3)
 
     accounts = config.get("accounts", [])
@@ -507,7 +607,14 @@ async def batch_login(config: dict) -> None:
         print("配置文件中没有账号信息。")
         return
 
-    print(f"Codex 批量登录 — 共 {len(accounts)} 个账号，无头模式={headless}\n")
+    print(
+        "Codex 批量登录 — "
+        f"共 {len(accounts)} 个账号，"
+        f"无头模式={headless}，"
+        f"超时={timeout_sec}s，"
+        f"调试模式={debug_mode}，"
+        f"超时保留浏览器={keep_browser_open_on_timeout}\n"
+    )
 
     success_list, fail_list = [], []
 
@@ -515,21 +622,35 @@ async def batch_login(config: dict) -> None:
         email = acc.get("email", "").strip()
         password = acc.get("password", "").strip()
         totp = acc.get("totp_secret", "").strip()
+        verify_url = acc.get("verify_url", "").strip()
+        account_mail_provider = "xiaohei" if verify_url else mail_provider
 
-        if not email or not password:
-            print(f"[!] 跳过第 {idx + 1} 条记录：缺少 email 或 password")
+        if not email:
+            print(f"[!] 跳过第 {idx + 1} 条记录：缺少 email")
             continue
+        if not password:
+            print(f"    [~] {email} 未配置密码，将依赖邮件验证码登录")
+
+        if verify_url:
+            masked_verify_url = verify_url[:96] + ("..." if len(verify_url) > 96 else "")
+            print(f"    [D] {email} 使用小黑验证码 URL：{masked_verify_url}")
+        elif account_mail_provider:
+            print(f"    [D] {email} 使用邮件提供商：{account_mail_provider}")
 
         ok = await login_one_account(
             client,
             email,
             password,
             totp,
+            verify_url,
             headless,
             proxy_url,
-            mail_provider,
+            account_mail_provider,
             browser_channel=browser_channel,
             inherit_system_proxy=inherit_system_proxy,
+            timeout_sec=timeout_sec,
+            debug_mode=debug_mode,
+            keep_browser_open_on_timeout=keep_browser_open_on_timeout,
         )
         (success_list if ok else fail_list).append(email)
 

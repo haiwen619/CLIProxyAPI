@@ -146,6 +146,10 @@
           <span>备注</span>
           <textarea id="accountNotes" rows="4" placeholder="补充说明"></textarea>
         </label>
+        <label class="full">
+          <span>验证码 URL <small>（小黑平台专用，其他邮箱留空）</small></span>
+          <input id="accountVerifyUrl" type="url" placeholder="https://xiaoheiapi.top/m/xxx/email%40outlook.com">
+        </label>
         <label class="toggle">
           <input id="accountEnabled" type="checkbox" checked>
           <span>导出时启用该账号</span>
@@ -165,10 +169,14 @@
         <button class="icon-btn" id="closeBatchModal" type="button">×</button>
       </div>
       <div class="batch-help">
-        支持两种格式:
+        支持四种格式:
         <code>[{"email":"a@b.com","password":"123","totp_secret":""}]</code>
+        、<code>{"accounts":[{"email":"a@b.com","password":"123"}]}</code>
         或每行一个
         <code>email,password,totp_secret</code>
+        ，或标签式文本
+        <code>邮箱: a@b.com / 密码: 123456</code>
+        。额外字段如 <code>registered_at</code> 会被忽略。
       </div>
       <textarea id="batchInput" rows="12" placeholder='[{"email":"a@example.com","password":"123456","totp_secret":""}]'></textarea>
       <div class="modal-actions">

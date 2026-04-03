@@ -207,6 +207,7 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	h.disableInvalidatedAuth(c.Request.Context(), auth, resp.StatusCode, string(respBody))
 
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
@@ -225,6 +226,40 @@ func firstNonEmptyString(values ...*string) string {
 		}
 	}
 	return ""
+}
+
+func shouldDisableAuthForInvalidatedToken(statusCode int, body string) bool {
+	if statusCode != http.StatusUnauthorized {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(body))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "authentication token has been invalidated")
+}
+
+func (h *Handler) disableInvalidatedAuth(ctx context.Context, auth *coreauth.Auth, statusCode int, body string) {
+	if auth == nil || h == nil || h.authManager == nil {
+		return
+	}
+	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+		return
+	}
+	if !shouldDisableAuthForInvalidatedToken(statusCode, body) {
+		return
+	}
+
+	updated := auth.Clone()
+	updated.Disabled = true
+	updated.Status = coreauth.StatusDisabled
+	updated.StatusMessage = "disabled: authentication token invalidated"
+	updated.Unavailable = false
+	updated.NextRetryAfter = time.Time{}
+	updated.UpdatedAt = time.Now()
+	if _, err := h.authManager.Update(ctx, updated); err != nil {
+		log.WithError(err).Warnf("management api-call: failed to disable invalidated auth %s", auth.ID)
+	}
 }
 
 func tokenValueForAuth(auth *coreauth.Auth) string {

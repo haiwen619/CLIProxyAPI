@@ -25,6 +25,12 @@ from urllib.parse import quote
 
 import httpx
 
+try:
+    from xiaohei_mail import fetch_code_details as _xh_fetch_code_details
+    _XIAOHEI_AVAILABLE = True
+except ImportError:
+    _XIAOHEI_AVAILABLE = False
+
 # ═══════════════════════════ 配置区 ═══════════════════════════
 NPCMAIL_API_KEY = "sk-hvvr8yimqCKm"
 NPCMAIL_BASE    = "https://moemail.nanohajimi.mom"
@@ -93,6 +99,7 @@ async def fetch_latest_email_info(
     api_key: str | None = None,
     proxy: str | None = None,
     timeout: float | None = None,
+    verify_url: str = "",
 ) -> dict:
     """
     查询指定邮箱的最新一封邮件。
@@ -134,6 +141,38 @@ async def fetch_latest_email_info(
         "verification_code": "",
         "error": "",
     }
+
+    if provider == "xiaohei":
+        url = (verify_url or "").strip()
+        if not url:
+            info["error"] = "xiaohei provider 缺少 verify_url"
+            return info
+        if not _XIAOHEI_AVAILABLE:
+            info["error"] = "xiaohei_mail 模块不可用"
+            return info
+
+        detail = await _xh_fetch_code_details(url, timeout=int(_timeout), proxy=_proxy or "")
+        info["request_status_code"] = int(detail.get("status_code") or 0)
+        info["request_url"] = str(detail.get("final_url") or url)
+        info["body_preview"] = str(detail.get("body_preview") or "")
+        if detail.get("error"):
+            info["error"] = str(detail["error"])
+            return info
+
+        code = str(detail.get("code") or "")
+        if not code:
+            info["error"] = "未在小黑页面中解析到验证码"
+            return info
+
+        info.update({
+            "ok": True,
+            "subject": "Microsoft 验证码邮件（小黑平台）",
+            "from": "Microsoft",
+            "content": f"验证码: {code}",
+            "verification_code": code,
+            "error": "",
+        })
+        return info
 
     try:
         async with httpx.AsyncClient(timeout=_timeout, proxy=_proxy) as client:
@@ -238,11 +277,12 @@ async def _main_async() -> None:
     parser.add_argument("email", help="邮箱地址，如 abc@example.com")
     parser.add_argument(
         "--provider", default=EMAIL_PROVIDER,
-        choices=["gptmail", "npcmail"],
+        choices=["gptmail", "npcmail", "xiaohei"],
         help=f"邮件提供商（默认 {EMAIL_PROVIDER}）",
     )
     parser.add_argument("--api-key", default="", help="覆盖配置中的 API Key")
     parser.add_argument("--proxy",   default="", help="HTTP 代理，如 http://127.0.0.1:7890")
+    parser.add_argument("--verify-url", default="", help="xiaohei provider 使用的小黑验证码 URL")
     parser.add_argument("--json",    action="store_true", help="以 JSON 格式输出完整结果")
     args = parser.parse_args()
 
@@ -251,6 +291,7 @@ async def _main_async() -> None:
         args.provider,
         api_key=args.api_key or None,
         proxy=args.proxy or None,
+        verify_url=args.verify_url or "",
     )
 
     if args.json:

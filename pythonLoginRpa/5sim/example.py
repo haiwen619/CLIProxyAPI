@@ -59,7 +59,51 @@ def example_buy_and_receive_sms():
         print("订单已取消（已退款）")
 
     except FiveSimError as e:
+        msg = str(e)
         print(f"API 错误: {e}")
+        if "BANNED" in msg:
+            # 号码已被拉黑，举报并退款
+            try:
+                client.ban_order(order_id)
+                print(f"号码已举报为封禁（订单 {order_id} 已退款）")
+            except FiveSimError as be:
+                print(f"举报失败: {be}")
+        elif "CANCELED" in msg:
+            print(f"订单 {order_id} 已被取消，无需再次操作")
+
+
+def example_cancel_order(order_id: int):
+    """示例：主动取消指定订单（号码失效/无法使用时退款）"""
+    client = FiveSimClient(API_KEY)
+
+    # 先查询当前状态
+    try:
+        order = client.check_order(order_id)
+        status = order.get("status", "UNKNOWN")
+        phone = order.get("phone", "")
+        print(f"订单 {order_id}  号码: {phone}  当前状态: {status}")
+    except FiveSimError as e:
+        print(f"查询订单失败: {e}")
+        return
+
+    if status in ("FINISHED", "CANCELED", "TIMEOUT"):
+        print(f"订单已处于终态（{status}），无法取消")
+        return
+
+    if status == "BANNED":
+        # 号码被拉黑 → 使用 ban_order 举报并退款
+        try:
+            result = client.ban_order(order_id)
+            print(f"已举报封禁号码，退款状态: {result.get('status')}")
+        except FiveSimError as e:
+            print(f"举报失败: {e}")
+    else:
+        # PENDING / RECEIVED 等正常状态 → 普通取消退款
+        try:
+            result = client.cancel_order(order_id)
+            print(f"订单已取消，退款状态: {result.get('status')}")
+        except FiveSimError as e:
+            print(f"取消失败: {e}")
 
 
 def example_check_prices():
@@ -113,3 +157,9 @@ if __name__ == "__main__":
     print("示例 4: 购买号码并接收短信")
     print("=" * 50)
     example_buy_and_receive_sms()
+
+    # 取消注释并填入订单 ID，可主动取消失效/被拉黑的订单
+    # print("\n" + "=" * 50)
+    # print("示例 5: 取消指定订单（号码失效/被拉黑时退款）")
+    # print("=" * 50)
+    # example_cancel_order(984206469)  # ← 替换为你的订单 ID

@@ -4,3 +4,8 @@ httpx>=0.27.0
 
 # Optional: required only if any account uses TOTP / 2FA
 # pip install pyotp
+
+# Required for tools/shadowsocks_local.py (ss:// proxy support)
+cryptography>=41.0.0
+# httpx SOCKS5 transport (needed when proxy URL is socks5://...)
+httpx[socks]>=0.27.0

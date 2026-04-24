@@ -3403,6 +3403,7 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
+		shouldReschedule := false
 		if shouldDisableAuthForInvalidatedToken(statusCodeFromError(err), err.Error()) {
 			disabled := auth.Clone()
 			disabled.Disabled = true

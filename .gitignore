@@ -62,3 +62,4 @@ _bmad-output/*
 .cli-proxy-api/
 .venv/
 /.vs
+.gocache/

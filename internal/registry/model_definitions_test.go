@@ -2,9 +2,15 @@ package registry
 
 import "testing"
 
+func TestCodexFreeModelsExcludeGPT55(t *testing.T) {
+	model := findModelInfo(GetCodexFreeModels(), "gpt-5.5")
+	if model != nil {
+		t.Fatal("expected codex free tier to NOT include gpt-5.5")
+	}
+}
+
 func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 	tierModels := map[string][]*ModelInfo{
-		"free": GetCodexFreeModels(),
 		"team": GetCodexTeamModels(),
 		"plus": GetCodexPlusModels(),
 		"pro":  GetCodexProModels(),
@@ -25,6 +31,58 @@ func TestCodexStaticModelsIncludeGPT55(t *testing.T) {
 		t.Fatal("expected LookupStaticModelInfo to find gpt-5.5")
 	}
 	assertGPT55ModelInfo(t, "lookup", model)
+}
+
+func TestWithXAIBuiltinsAddsVideoModel(t *testing.T) {
+	models := WithXAIBuiltins(nil)
+	found := false
+	for _, model := range models {
+		if model != nil && model.ID == xaiBuiltinVideoModelID {
+			found = true
+			if model.OwnedBy != "xai" {
+				t.Fatalf("OwnedBy = %q, want xai", model.OwnedBy)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected %s builtin model", xaiBuiltinVideoModelID)
+	}
+}
+
+func TestValidateModelsCatalogAllowsMissingSections(t *testing.T) {
+	data := validTestModelsCatalog()
+	data.XAI = nil
+
+	if err := validateModelsCatalog(data); err != nil {
+		t.Fatalf("validateModelsCatalog() error = %v", err)
+	}
+}
+
+func TestValidateModelsCatalogRejectsInvalidDefinitions(t *testing.T) {
+	data := validTestModelsCatalog()
+	data.Claude = []*ModelInfo{{ID: ""}}
+
+	if err := validateModelsCatalog(data); err == nil {
+		t.Fatal("expected invalid model definition error")
+	}
+}
+
+func validTestModelsCatalog() *staticModelsJSON {
+	models := []*ModelInfo{{ID: "test-model"}}
+	return &staticModelsJSON{
+		Claude:      models,
+		Gemini:      models,
+		Vertex:      models,
+		GeminiCLI:   models,
+		AIStudio:    models,
+		CodexFree:   models,
+		CodexTeam:   models,
+		CodexPlus:   models,
+		CodexPro:    models,
+		Kimi:        models,
+		Antigravity: models,
+		XAI:         models,
+	}
 }
 
 func findModelInfo(models []*ModelInfo, id string) *ModelInfo {
